@@ -15,7 +15,7 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.12"
-  NODE_VERSION: "20"
+  NODE_VERSION: "22"
   GITLEAKS_IMAGE: "ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f"
 
 jobs:
@@ -25,7 +25,7 @@ jobs:
 
     steps:
       - name: Checkout governed source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -37,7 +37,7 @@ jobs:
           test "$ACTUAL" = "$GITHUB_SHA"
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -66,7 +66,7 @@ jobs:
             --root .
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -90,7 +90,7 @@ jobs:
 
     steps:
       - name: Checkout governed source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Verify exact source binding
         shell: bash
@@ -100,7 +100,7 @@ jobs:
           test "$ACTUAL" = "$GITHUB_SHA"
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -124,7 +124,7 @@ jobs:
 
     steps:
       - name: Checkout governed source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Verify exact source binding
         shell: bash
@@ -134,12 +134,12 @@ jobs:
           test "$ACTUAL" = "$GITHUB_SHA"
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -170,7 +170,7 @@ jobs:
 
     steps:
       - name: Checkout governed source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
