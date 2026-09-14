@@ -1,0 +1,309 @@
+name: NODE63 CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: node63-ci-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+  GITLEAKS_IMAGE: "ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f"
+
+jobs:
+  validation:
+    name: CI-C01 Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout governed source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact source binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git rev-parse HEAD)"
+          test "$ACTUAL" = "$GITHUB_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Validate NODE63 repository profile
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "$GITHUB_EVENT_NAME" in
+            pull_request)
+              SOURCE_KIND="PR_TEST_MERGE"
+              ;;
+            push)
+              SOURCE_KIND="PUSH_TIP"
+              ;;
+            *)
+              exit 1
+              ;;
+          esac
+
+          python scripts/ci/node63_ci.py profile \
+            --profile "CI-P03" \
+            --repository "node63labs/lariba-docs-site" \
+            --source-sha "$GITHUB_SHA" \
+            --source-kind "$SOURCE_KIND" \
+            --root .
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+
+      - name: Run lint and typecheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run lint
+          npm run typecheck
+
+  tests:
+    name: CI-C02 Test Resolution
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout governed source
+        uses: actions/checkout@v7
+
+      - name: Verify exact source binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git rev-parse HEAD)"
+          test "$ACTUAL" = "$GITHUB_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Resolve CI-C02
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STATE="$(
+            python scripts/ci/node63_ci.py control \
+              --profile "CI-P03" \
+              --control "CI-C02"
+          )"
+
+          echo "CI_C02_STATE=$STATE"
+          test "$STATE" = "NOT_APPLICABLE"
+
+  build:
+    name: CI-C03 Build / Provenance
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout governed source
+        uses: actions/checkout@v7
+
+      - name: Verify exact source binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git rev-parse HEAD)"
+          test "$ACTUAL" = "$GITHUB_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+
+      - name: Build documentation site
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build
+
+          STATE="$(
+            python scripts/ci/node63_ci.py control \
+              --profile "CI-P03" \
+              --control "CI-C03"
+          )"
+
+          test "$STATE" = "REQUIRED_BUILD"
+
+  secret_scan:
+    name: CI-C04 Secret Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout governed source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact source binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git rev-parse HEAD)"
+          test "$ACTUAL" = "$GITHUB_SHA"
+
+      - name: Scan introduced commit range
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          ZERO_SHA="0000000000000000000000000000000000000000"
+
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            test -n "$BASE_SHA"
+            LOG_OPTS="$BASE_SHA..$SOURCE_SHA"
+
+          elif [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "$ZERO_SHA" ]; then
+            LOG_OPTS="$BEFORE_SHA..$SOURCE_SHA"
+
+          else
+            LOG_OPTS="--max-count=1 $SOURCE_SHA"
+          fi
+
+          docker run --rm \
+            -e GIT_CONFIG_COUNT=1 \
+            -e GIT_CONFIG_KEY_0=safe.directory \
+            -e GIT_CONFIG_VALUE_0=/repo \
+            -v "$GITHUB_WORKSPACE:/repo" \
+            "$GITLEAKS_IMAGE" \
+            git \
+            --redact \
+            --exit-code=1 \
+            --log-opts="$LOG_OPTS" \
+            /repo
+
+  admission:
+    name: CI-C05/C06/C07 Admission Result
+    if: ${{ always() }}
+    needs:
+      - validation
+      - tests
+      - build
+      - secret_scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Normalize admission envelope
+        id: normalize
+        shell: bash
+        env:
+          VALIDATION_RESULT: ${{ needs.validation.result }}
+          TEST_RESULT: ${{ needs.tests.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          SECRET_SCAN_RESULT: ${{ needs.secret_scan.result }}
+          RELATED_CHANGE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          case "$GITHUB_EVENT_NAME" in
+            pull_request)
+              SOURCE_KIND="PR_TEST_MERGE"
+              ;;
+            push)
+              SOURCE_KIND="PUSH_TIP"
+              ;;
+            *)
+              exit 1
+              ;;
+          esac
+
+          ADMISSION="PASS"
+
+          for RESULT in \
+            "$VALIDATION_RESULT" \
+            "$TEST_RESULT" \
+            "$BUILD_RESULT" \
+            "$SECRET_SCAN_RESULT"
+          do
+            if [ "$RESULT" != "success" ]; then
+              ADMISSION="FAIL"
+            fi
+          done
+
+          cat > node63-ci-result.json <<EOF
+          {
+            "schema": "node63-ci-result/v1",
+            "repository": "$GITHUB_REPOSITORY",
+            "profile": "CI-P03",
+            "source_sha": "$GITHUB_SHA",
+            "source_kind": "$SOURCE_KIND",
+            "related_change_sha": "$RELATED_CHANGE_SHA",
+            "validation": "$VALIDATION_RESULT",
+            "ci_c02_job": "$TEST_RESULT",
+            "ci_c02_resolution": "CONDITIONAL_INACTIVE",
+            "ci_c03_job": "$BUILD_RESULT",
+            "ci_c03_resolution": "REQUIRED_BUILD",
+            "secret_scan": "$SECRET_SCAN_RESULT",
+            "admission_result": "$ADMISSION",
+            "ci_c07_enforcement_mode": "UNENFORCED_PENDING_PROVIDER",
+            "ci_c07_closure": "NO",
+            "material_release_authority": "NO"
+          }
+          EOF
+
+          cat node63-ci-result.json
+
+          echo "admission=$ADMISSION" >> "$GITHUB_OUTPUT"
+
+      - name: Publish normalized result
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: node63-ci-result-${{ github.run_id }}-${{ github.run_attempt }}
+          path: node63-ci-result.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce admission result
+        if: ${{ always() }}
+        shell: bash
+        env:
+          ADMISSION: ${{ steps.normalize.outputs.admission }}
+        run: |
+          set -euo pipefail
+          test "$ADMISSION" = "PASS"
